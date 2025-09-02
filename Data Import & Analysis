@@ -1,0 +1,173 @@
+# Import necessary libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, IsolationForest
+from sklearn.svm import SVC
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, roc_curve, precision_recall_curve, average_precision_score
+import warnings
+warnings.filterwarnings('ignore')
+%matplotlib inline
+
+# Load the data
+df = pd.read_csv(r"C:\Users\FrankJR\Downloads\Portfolio\Credit Card Fraud Dataset\Credit Card Fraud (4000 row).csv")
+
+# Initial inspection
+print(f"Dataset Shape: {df.shape}")
+print("\nFirst 5 rows:")
+print(df.head())
+print("\nDataset Info:")
+print(df.info())
+print("\nSummary Statistics:")
+print(df.describe())
+print("\nClass Distribution:")
+print(df['Class'].value_counts())
+print(f"\nPercentage of Fraudulent Transactions: {df['Class'].value_counts(normalize=True)[1] * 100:.3f}%")
+
+# Check for missing values
+print("Missing Values per Column:")
+print(df.isnull().sum())
+
+# Check for duplicate rows
+duplicates = df.duplicated().sum()
+print(f"Number of duplicate rows: {duplicates}")
+# It's common to have no duplicates in such datasets. If there were, we would drop them.
+# df = df.drop_duplicates()
+
+# Since 'Time' might represent the seconds elapsed since the first transaction, its utility is debated.
+# Often it's dropped. We'll keep it for this analysis but note that it might not be a strong predictor.
+# Create a new dataframe for the cleaned and scaled data
+df_clean = df.copy()
+
+# Initialize RobustScaler
+rob_scaler = RobustScaler()
+
+# Scale 'Time' and 'Amount'
+df_clean['scaled_time'] = rob_scaler.fit_transform(df_clean['Time'].values.reshape(-1, 1))
+df_clean['scaled_amount'] = rob_scaler.fit_transform(df_clean['Amount'].values.reshape(-1, 1))
+
+# Drop the original 'Time' and 'Amount' columns
+df_clean.drop(['Time', 'Amount'], axis=1, inplace=True)
+
+# Let's move the 'Class' column to the end for clarity
+class_column = df_clean.pop('Class')
+df_clean['Class'] = class_column
+
+print(df_clean.head())
+
+plt.figure(figsize=(14, 10))
+# Calculate correlations
+corr_matrix = df_clean.corr()
+# Create a mask to hide the upper triangle (it's symmetric)
+mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+# Plot the heatmap
+sns.heatmap(corr_matrix, mask=mask, cmap='coolwarm_r', annot=False, center=0)
+plt.title('Correlation Matrix of Scaled Features')
+plt.show()
+
+# Let's look specifically at correlations with the target 'Class'
+corr_with_class = corr_matrix['Class'].sort_values(ascending=False)
+print("Features Most Correlated with Class (Fraud):")
+print(corr_with_class)
+
+# Create a list of the top 8 most correlated features (4 positive, 4 negative)
+top_corr_features = corr_with_class.drop('Class').head(4).index.tolist() + corr_with_class.drop('Class').tail(4).index.tolist()
+
+# Plot distributions
+fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(15, 16))
+axes = axes.flatten()
+
+for i, feature in enumerate(top_corr_features):
+    sns.histplot(data=df_clean, x=feature, hue='Class', stat='density', common_norm=False, ax=axes[i], kde=True, alpha=0.6)
+    axes[i].set_title(f'Distribution of {feature} by Class', fontsize=13)
+    axes[i].legend(['Fraud', 'Normal'])
+
+plt.tight_layout()
+plt.suptitle('Distributions of Top Correlated Features', fontsize=16, y=1.02)
+plt.show()
+
+fig, axes = plt.subplots(nrows=4, ncols=2, figsize=(15, 16))
+axes = axes.flatten()
+
+for i, feature in enumerate(top_corr_features):
+    sns.boxplot(data=df_clean, x='Class', y=feature, ax=axes[i])
+    axes[i].set_title(f'Boxplot of {feature} by Class', fontsize=13)
+    axes[i].set_xticklabels(['Normal', 'Fraud'])
+
+plt.tight_layout()
+plt.suptitle('Boxplots of Top Correlated Features', fontsize=16, y=1.02)
+plt.show()
+
+# Separate features and target
+X = df_clean.drop('Class', axis=1)
+y = df_clean['Class']
+
+# Split the data (Stratified)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+print(f"Training set shape: {X_train.shape}")
+print(f"Testing set shape: {X_test.shape}")
+print(f"Fraud ratio in y_train: {y_train.mean():.4f}")
+print(f"Fraud ratio in y_test: {y_test.mean():.4f}")
+
+# Concatenate training data to undersample
+train_df = pd.concat([X_train, y_train], axis=1)
+
+# Separate classes
+normal = train_df[train_df.Class == 0]
+fraud = train_df[train_df.Class == 1]
+
+# Under-sample the normal class to match the fraud count
+normal_undersampled = normal.sample(n=len(fraud), random_state=42)
+
+# Combine back into a single DataFrame
+undersampled_df = pd.concat([normal_undersampled, fraud], axis=0)
+
+# Shuffle the dataset
+undersampled_df = undersampled_df.sample(frac=1, random_state=42).reset_index(drop=True)
+
+# Split back into X and y
+X_train_under = undersampled_df.drop('Class', axis=1)
+y_train_under = undersampled_df['Class']
+
+print("Under-sampled training data shape:", X_train_under.shape)
+print("Class distribution in under-sampled data:\n", y_train_under.value_counts())
+
+# Initialize and train the model
+log_reg = LogisticRegression(random_state=42, max_iter=1000)
+log_reg.fit(X_train_under, y_train_under)
+
+# Predict on the original test set
+y_pred = log_reg.predict(X_test)
+y_pred_proba = log_reg.predict_proba(X_test)[:, 1] # Probabilities for the positive class
+
+# Evaluate
+print("Classification Report:\n", classification_report(y_test, y_pred))
+print("\nConfusion Matrix:")
+plt.figure(figsize=(6,4))
+sns.heatmap(confusion_matrix(y_test, y_pred), annot=True, fmt='d', cmap='Blues', cbar=False,
+            xticklabels=['Predicted Normal', 'Predicted Fraud'],
+            yticklabels=['Actual Normal', 'Actual Fraud'])
+plt.title('Confusion Matrix - Logistic Regression')
+plt.show()
+
+# Calculate AUC-ROC
+roc_auc = roc_auc_score(y_test, y_pred_proba)
+print(f"ROC-AUC Score: {roc_auc:.4f}")
+
+# Get feature importances (coefficients from logistic regression)
+feature_importance = pd.DataFrame({
+    'Feature': X_train_under.columns,
+    'Importance': log_reg.coef_[0]
+})
+feature_importance = feature_importance.sort_values('Importance', ascending=False)
+
+plt.figure(figsize=(10, 8))
+sns.barplot(x='Importance', y='Feature', data=feature_importance, palette='viridis')
+plt.title('Feature Importance (Logistic Regression Coefficients)')
+plt.tight_layout()
+plt.show()
